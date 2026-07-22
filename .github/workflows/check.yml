@@ -1,9 +1,9 @@
-name: Check Odyssey IMAX 70mm availability
+name: Scheduled availability check
 
 on:
   schedule:
-    # Every 20 minutes. GitHub may delay this slightly under load, but it's free.
-    - cron: "*/20 * * * *"
+    # Every 5 minutes. Public repos get unlimited free Actions minutes.
+    - cron: "*/5 * * * *"
   workflow_dispatch: {}   # lets you trigger it manually from the Actions tab
 
 permissions:
@@ -24,18 +24,20 @@ jobs:
 
       - name: Run checker
         env:
-          CHECK_URL: ${{ secrets.CHECK_URL }}
+          API_ENDPOINT: ${{ secrets.API_ENDPOINT }}
+          ITEM_ID: ${{ secrets.ITEM_ID }}
+          AUTH_KEY: ${{ secrets.AUTH_KEY }}
           SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
-        run: python check_odyssey.py
+        run: python checker.py
 
       - name: Commit updated state
         run: |
-          git config user.name "odyssey-checker-bot"
+          git config user.name "state-bot"
           git config user.email "actions@users.noreply.github.com"
           git add state.json
-          git diff --cached --quiet || git commit -m "Update seen-dates state"
+          git diff --cached --quiet || git commit -m "Update state"
           git push
