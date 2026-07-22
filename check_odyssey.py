@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """
-Checks Cineplex's showtime-availability API for The Odyssey (IMAX 70mm)
-at specific theatres, and emails you when a NEW date appears that
-wasn't there on the last run.
+Checks Cineplex's "bookable dates" API for The Odyssey (IMAX 70mm, filmId
+37617) and emails you when a NEW date appears that wasn't there last run.
+
+This endpoint returns bookable dates nationally (not split by theatre), so
+a new date here means "opened up somewhere in Canada" -- given there are
+only a handful of 70mm IMAX theatres in the country, that's still a strong
+signal. Confirm the specific date applies to Mississauga/Vaughan on
+cineplex.com before buying.
 
 State is stored in state.json so re-runs only alert on genuinely new dates.
 """
@@ -18,117 +23,68 @@ import requests
 
 STATE_FILE = Path("state.json")
 
-# Theatre names to watch for (case-insensitive substring match against
-# whatever name field Cineplex returns for each theatre in the API response)
-TARGET_THEATRES = [
-    "Mississauga",
-    "Vaughan",
-]
+API_URL = "https://apis.cineplex.com/prod/cpx/theatrical/api/v1/dates/bookable"
+FILM_ID = "37617"  # The Odyssey
 
 
 def load_state() -> dict:
     if STATE_FILE.exists():
         return json.loads(STATE_FILE.read_text())
-    return {}
+    return {"dates": []}
 
 
 def save_state(state: dict) -> None:
     STATE_FILE.write_text(json.dumps(state, indent=2, sort_keys=True))
 
 
-def fetch_availability(check_url: str) -> dict:
+def fetch_bookable_dates(subscription_key: str) -> list:
     """
-    Hits the Cineplex 'availabletheatres/dates' endpoint you captured from
-    your browser's dev tools. Returns the parsed JSON.
+    Hits Cineplex's public bookable-dates endpoint. Returns a list of
+    ISO date strings, e.g. ["2026-07-21T00:00:00", "2026-07-22T00:00:00", ...]
     """
     headers = {
-        # Mimic a real browser; Cineplex's API can be picky about this.
+        "Ocp-Apim-Subscription-Key": subscription_key,
+        "Accept": "application/json",
+        "Referer": "https://www.cineplex.com/",
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
         ),
-        "Accept": "application/json",
     }
-    resp = requests.get(check_url, headers=headers, timeout=30)
+    params = {"filmId": FILM_ID}
+    resp = requests.get(API_URL, headers=headers, params=params, timeout=30)
     resp.raise_for_status()
-    return resp.json()
+    data = resp.json()
 
-
-def extract_theatre_dates(data: dict) -> dict:
-    """
-    Cineplex's response shape can shift slightly, so this walks the JSON
-    defensively looking for theatre entries with a name + list of dates.
-    Returns: { theatre_name: [date_str, ...] }
-    """
-    results = {}
-
-    # The endpoint typically returns something like:
-    # { "theatres": [ { "name": "...", "dates": ["2026-08-20", ...] }, ... ] }
-    # but we handle a couple of shapes defensively.
-    candidates = None
-    if isinstance(data, dict):
-        for key in ("theatres", "Theatres", "results", "data"):
-            if key in data and isinstance(data[key], list):
-                candidates = data[key]
-                break
-    elif isinstance(data, list):
-        candidates = data
-
-    if candidates is None:
-        # Unknown shape — dump it so you can inspect and adjust the parser.
-        print("WARNING: unrecognized JSON shape, dumping raw response:")
+    if not isinstance(data, list):
+        print("WARNING: unexpected response shape, dumping raw response:")
         print(json.dumps(data, indent=2)[:2000])
-        return results
+        return []
 
-    for entry in candidates:
-        name = (
-            entry.get("name")
-            or entry.get("Name")
-            or entry.get("theatreName")
-            or ""
-        )
-        dates = (
-            entry.get("dates")
-            or entry.get("Dates")
-            or entry.get("availableDates")
-            or []
-        )
-        # Normalize date entries whether they're plain strings or dicts
-        clean_dates = []
-        for d in dates:
-            if isinstance(d, str):
-                clean_dates.append(d)
-            elif isinstance(d, dict):
-                clean_dates.append(
-                    d.get("date") or d.get("Date") or d.get("showDate") or str(d)
-                )
-        results[name] = sorted(set(clean_dates))
-
-    return results
+    return sorted(set(data))
 
 
-def matches_target(theatre_name: str) -> bool:
-    lname = theatre_name.lower()
-    return any(t.lower() in lname for t in TARGET_THEATRES)
-
-
-def send_email(new_dates: dict) -> None:
+def send_email(new_dates: list) -> None:
     smtp_server = os.environ["SMTP_SERVER"]
     smtp_port = int(os.environ.get("SMTP_PORT", "587"))
     smtp_user = os.environ["SMTP_USER"]
     smtp_pass = os.environ["SMTP_PASS"]
     email_to = os.environ["EMAIL_TO"]
 
-    lines = ["New IMAX 70mm dates just opened up for The Odyssey:\n"]
-    for theatre, dates in new_dates.items():
-        lines.append(f"{theatre}:")
-        for d in dates:
-            lines.append(f"  - {d}")
-        lines.append("")
+    lines = [
+        "New IMAX 70mm bookable date(s) just opened up for The Odyssey:\n",
+    ]
+    for d in new_dates:
+        lines.append(f"  - {d}")
+    lines.append("")
+    lines.append(
+        "This list is nationwide, not theatre-specific -- double check "
+        "Mississauga and Vaughan directly on cineplex.com before buying."
+    )
     body = "\n".join(lines)
 
     msg = MIMEText(body)
-    msg["Subject"] = "New Odyssey IMAX 70mm dates available!"
+    msg["Subject"] = "New Odyssey IMAX 70mm date(s) available!"
     msg["From"] = smtp_user
     msg["To"] = email_to
 
@@ -141,29 +97,19 @@ def send_email(new_dates: dict) -> None:
 
 
 def main() -> int:
-    check_url = os.environ.get("CHECK_URL")
-    if not check_url:
-        print("ERROR: CHECK_URL environment variable not set.", file=sys.stderr)
+    subscription_key = os.environ.get("CHECK_URL")  # reusing this secret name for the key
+    if not subscription_key:
+        print("ERROR: CHECK_URL (subscription key) environment variable not set.", file=sys.stderr)
         return 1
 
-    data = fetch_availability(check_url)
-    current = extract_theatre_dates(data)
-    current = {name: dates for name, dates in current.items() if matches_target(name)}
+    current_dates = fetch_bookable_dates(subscription_key)
 
-    if not current:
-        print(
-            "WARNING: no matching theatres found in response. "
-            "The API shape may have changed, or TARGET_THEATRES needs adjusting."
-        )
+    if not current_dates:
+        print("WARNING: no dates returned. The API may have changed or the key may be stale/rotated.")
 
     state = load_state()
-    new_dates = {}
-
-    for theatre, dates in current.items():
-        old_dates = set(state.get(theatre, []))
-        added = sorted(set(dates) - old_dates)
-        if added:
-            new_dates[theatre] = added
+    old_dates = set(state.get("dates", []))
+    new_dates = sorted(set(current_dates) - old_dates)
 
     if new_dates:
         print("New dates found:", new_dates)
@@ -174,8 +120,7 @@ def main() -> int:
     else:
         print("No new dates since last check.")
 
-    # Update state regardless, so next run compares against latest known dates
-    state.update(current)
+    state["dates"] = current_dates
     save_state(state)
     return 0
 
