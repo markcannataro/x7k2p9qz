@@ -1,74 +1,57 @@
-# Odyssey IMAX 70mm availability checker
+# Availability checker
 
-Checks Cineplex every 20 minutes for new available dates at Mississauga and
-Vaughan, and emails you the moment something new opens up. Runs on GitHub's
-servers (free), so your computer doesn't need to be on.
+Checks a configured API endpoint every 5 minutes for new entries in a
+list, and emails you the moment something new appears. Runs on GitHub's
+servers (free, unlimited on public repos), so your computer doesn't need
+to be on.
+
+Deliberately generic naming/code throughout — the specific target isn't
+referenced anywhere in this repo, so it won't surface in casual searches.
+The three secrets below (`API_ENDPOINT`, `ITEM_ID`, `AUTH_KEY`) hold all
+the specifics, and only you have those values.
 
 ## Setup (about 10 minutes, one time)
 
 ### 1. Create the repo
-- Create a **new private repo** on GitHub (e.g. `odyssey-checker`).
-- Upload all the files in this folder to it (or `git push` if you're
-  comfortable with git).
+- Create a new repo on GitHub (name doesn't matter).
+- Upload all the files in this folder to it.
 
-### 2. Capture the exact API request Cineplex uses
-Cineplex bakes the movie's internal ID into the URL, and I can't browse
-their site directly to grab it for you, so this one step is manual:
-
-1. Open **cineplex.com** in Chrome, go to *The Odyssey: The IMAX Experience
-   in 70mm Film*, and get to the page where you pick a date/theatre for
-   Mississauga or Vaughan.
-2. Open DevTools (`F12` or `Ctrl+Shift+I`) → **Network** tab → filter by
-   **Fetch/XHR**.
-3. Refresh the page or click through the date picker. Look for a request
-   with a name like `dates`, `availabletheatres`, or `showtimes` — it'll
-   return JSON when you click the **Preview** or **Response** tab.
-4. Right-click that request → **Copy** → **Copy URL**. That's your
-   `CHECK_URL`.
-5. Open that URL directly in a new browser tab to sanity-check it returns
-   JSON with theatre names and dates in it (not an error page).
-
-If the JSON shape doesn't match what `check_odyssey.py` expects, the script
-will print a warning with the raw response — send that to me and I'll
-adjust the parser in `extract_theatre_dates()`.
-
-### 3. Get a Gmail app password (so the script can send email)
-- Turn on 2-Step Verification on the Gmail account you want to send *from*
-  (can be the same as the account you receive at, or a throwaway).
-- Go to **myaccount.google.com/apppasswords**, generate a password for
-  "Mail", and copy the 16-character code.
-
-### 4. Add secrets to the repo
-In your repo: **Settings → Secrets and variables → Actions → New repository
-secret**. Add these five:
+### 2. Add secrets
+**Settings → Secrets and variables → Actions → New repository secret.**
+Add these eight:
 
 | Secret name | Value |
 |---|---|
-| `CHECK_URL` | The URL you captured in step 2 |
+| `API_ENDPOINT` | The API URL you're targeting |
+| `ITEM_ID` | The specific item ID being tracked |
+| `AUTH_KEY` | The API key/subscription key required by the endpoint |
 | `SMTP_SERVER` | `smtp.gmail.com` |
 | `SMTP_PORT` | `587` |
 | `SMTP_USER` | The Gmail address you're sending from |
-| `SMTP_PASS` | The 16-character app password from step 3 |
-| `EMAIL_TO` | Where you want the alert sent (can be the same address) |
+| `SMTP_PASS` | A Gmail app password (see below) |
+| `EMAIL_TO` | Where you want the alert sent |
 
-### 5. Test it
-Go to the **Actions** tab → **Check Odyssey IMAX 70mm availability** →
-**Run workflow**. Check the logs:
-- First run will likely email you a big list — that's expected, since
-  `state.json` starts empty and everything currently open counts as "new."
-  After that, you'll only get emails for genuinely new dates.
-- If theatre names don't match, tweak `TARGET_THEATRES` in
-  `check_odyssey.py` (it does a case-insensitive substring match).
+**Gmail app password:** turn on 2-Step Verification on the sending
+account, then go to **myaccount.google.com/apppasswords**, generate one
+for "Mail," and copy the 16-character code (no spaces) as `SMTP_PASS`.
 
-After that, it just runs itself every 20 minutes.
+### 3. Test it
+Go to the **Actions** tab → the workflow → **Run workflow**. Check the
+logs:
+- First run will likely email you everything currently in the list —
+  expected, since `state.json` starts empty. After that, only genuinely
+  new entries trigger an email.
+- A warning about an unexpected response shape means the API changed —
+  you'll need to recapture `AUTH_KEY` (and possibly `API_ENDPOINT`) from
+  the site's network requests via browser dev tools, the same way you
+  found them originally.
+
+After that, it runs itself every 5 minutes.
 
 ## Adjusting the check frequency
-Edit the `cron` line in `.github/workflows/check.yml`. Note GitHub disables
-scheduled workflows on repos with no activity for 60+ days, and won't run
-more often than every 5 minutes — 20 minutes is a reasonable balance of
-speed vs. not hammering Cineplex's servers.
-
-## If Cineplex changes their API
-Cineplex's front-end occasionally changes how this request is shaped. If
-the checker stops finding your theatres, redo step 2 to grab a fresh
-`CHECK_URL` and update the secret.
+Edit the `cron` line in `.github/workflows/check.yml`. GitHub won't run a
+schedule more often than every 5 minutes, and disables scheduled
+workflows on repos with no activity for 60+ days (a manual "Run workflow"
+click resets that clock). Public repos get unlimited free Actions
+minutes; private repos get 2,000 free minutes/month, so a 5-minute
+schedule on a private repo would incur a small cost.
