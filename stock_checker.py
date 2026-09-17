@@ -86,10 +86,10 @@ def classify(page: str, product: dict) -> tuple[str, str]:
     """Only explicit online status counts; unknown never means available."""
     text = visible_text(page)
     if len(page) > 10_000_000 or len(text) < 300:
-        return "unknown", "Missing or oversized product page"
+        return "unknown", f"Missing or oversized product page ({len(page)} bytes, {len(text)} text chars)"
     for marker in product["identity"]:
         if marker.lower() not in text and marker.lower() not in page.lower():
-            return "unknown", f"Product identity marker missing: {marker}"
+            return "unknown", "Product identity marker missing"
 
     # Exact phrases observed on the three Canadian product pages. A generic
     # 'Add to Cart' elsewhere on the page is deliberately insufficient.
