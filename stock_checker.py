@@ -82,6 +82,78 @@ def fetch_rendered(product: dict) -> str:
             browser.close()
 
 
+
+class PurchasePanel(HTMLParser):
+    """Collect only the configured purchase panel, excluding hidden controls."""
+    VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
+
+    def __init__(self, panel_id):
+        super().__init__(convert_charrefs=True)
+        self.panel_id = panel_id
+        self.stack = []
+        self.parts = []
+        self.controls = []
+        self.found = False
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        parent = self.stack[-1] if self.stack else ("", False, False, None)
+        inside = parent[1] or attrs.get("id") == self.panel_id
+        style = re.sub(r"\s+", "", attrs.get("style", "").lower())
+        hidden = parent[2] or tag in {"script", "style", "noscript", "svg"} or "hidden" in attrs or attrs.get("aria-hidden") == "true" or "display:none" in style or "visibility:hidden" in style or bool({"aok-hidden", "a-hidden"} & set(attrs.get("class", "").split()))
+        self.found |= attrs.get("id") == self.panel_id
+        control = parent[3]
+        if inside and not hidden and tag in {"button", "input"}:
+            enabled = "disabled" not in attrs and attrs.get("aria-disabled") != "true" and attrs.get("type") != "hidden"
+            if enabled:
+                control = len(self.controls)
+                self.controls.append([attrs.get("value", ""), attrs.get("aria-label", "")])
+        if tag not in self.VOID:
+            self.stack.append((tag, inside, hidden, control))
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        if tag not in self.VOID:
+            self.handle_endtag(tag)
+
+    def handle_endtag(self, tag):
+        for index in range(len(self.stack) - 1, -1, -1):
+            if self.stack[index][0] == tag:
+                del self.stack[index:]
+                break
+
+    def handle_data(self, data):
+        if self.stack:
+            _, inside, hidden, control = self.stack[-1]
+            if inside and not hidden:
+                self.parts.append(data)
+                if control is not None:
+                    self.controls[control].append(data)
+
+
+def classify_purchase_panel(page, product):
+    parser = PurchasePanel(product["panel_id"])
+    parser.feed(page)
+    if not parser.found:
+        return "unknown", "Product purchase panel was not found"
+    panel = re.sub(r"\s+", " ", " ".join(parser.parts)).strip().lower()
+    if any(phrase.lower() in panel for phrase in product["unavailable"]):
+        return "unavailable", "Purchase panel says unavailable"
+    labels = {re.sub(r"\s+", " ", label).strip().lower() for control in parser.controls for label in [*control, " ".join(control)]}
+    if not labels.intersection(phrase.lower() for phrase in product["available"]):
+        return "unknown", "No enabled purchase button was confirmed"
+    if not re.search(product["seller_pattern"], panel, re.I):
+        return "unknown", "Official seller was not confirmed"
+    prices = {float(value.replace(",", "")) for value in re.findall(r"\$\s*([\d,]+\.\d{2})", panel)}
+    prices = {value for value in prices if value >= 100}
+    if len(prices) != 1:
+        return "unknown", "Offer price was not unambiguously confirmed"
+    price = prices.pop()
+    if price > product["max_price"]:
+        return "unavailable", "Offer exceeds configured price limit"
+    return "available", f"Enabled purchase button; official seller; CAD {price:.2f}"
+
+
 def classify(page: str, product: dict) -> tuple[str, str]:
     """Only explicit online status counts; unknown never means available."""
     text = visible_text(page)
@@ -90,6 +162,9 @@ def classify(page: str, product: dict) -> tuple[str, str]:
     for marker in product["identity"]:
         if marker.lower() not in text and marker.lower() not in page.lower():
             return "unknown", "Product identity marker missing"
+
+    if product.get("panel_id"):
+        return classify_purchase_panel(page, product)
 
     # Exact phrases observed on the three Canadian product pages. A generic
     # 'Add to Cart' elsewhere on the page is deliberately insufficient.
@@ -149,6 +224,7 @@ def send_check_warning(products: list[dict], recipient: str, sender: str, passwo
 def main() -> int:
     try:
         products = json.loads(os.environ["TARGETS_JSON"])
+        products.extend(json.loads(os.environ.get("EXTRA_TARGETS_JSON") or "[]"))
     except (KeyError, json.JSONDecodeError) as error:
         print(f"Missing or invalid TARGETS_JSON: {error}", file=sys.stderr)
         return 2
