@@ -59,10 +59,10 @@ def fetch(url: str) -> str:
         content_type = response.headers.get("Content-Type", "")
         if "html" not in content_type:
             raise ValueError(f"Unexpected content type: {content_type}")
-        return response.read(3_000_001).decode("utf-8", errors="replace")
+        return response.read(10_000_001).decode("utf-8", errors="replace")
 
 
-def fetch_rendered(url: str) -> str:
+def fetch_rendered(product: dict) -> str:
     """Read purchase status after the retailer's JavaScript has finished loading."""
     from playwright.sync_api import sync_playwright
 
@@ -70,11 +70,14 @@ def fetch_rendered(url: str) -> str:
         browser = playwright.chromium.launch(headless=True)
         try:
             page = browser.new_page(locale="en-CA")
-            page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            page.get_by_role(
-                "button", name=re.compile(r"^(Sold out|Add to cart|Pre-?order)$", re.I)
-            ).first.wait_for(timeout=20000)
-            return page.content()
+            page.goto(product["url"], wait_until="domcontentloaded", timeout=30000)
+            last_page = ""
+            for _ in range(20):
+                page.wait_for_timeout(1000)
+                last_page = page.content()
+                if classify(last_page, product)[0] != "unknown":
+                    break
+            return last_page
         finally:
             browser.close()
 
@@ -82,7 +85,7 @@ def fetch_rendered(url: str) -> str:
 def classify(page: str, product: dict) -> tuple[str, str]:
     """Only explicit online status counts; unknown never means available."""
     text = visible_text(page)
-    if len(page) > 3_000_000 or len(text) < 300:
+    if len(page) > 10_000_000 or len(text) < 300:
         return "unknown", "Missing or oversized product page"
     for marker in product["identity"]:
         if marker.lower() not in text and marker.lower() not in page.lower():
@@ -145,7 +148,7 @@ def main() -> int:
     for product in products:
         key = product["key"]
         try:
-            page = fetch_rendered(product["url"]) if product.get("render_js") else fetch(product["url"])
+            page = fetch_rendered(product) if product.get("render_js") else fetch(product["url"])
             status, reason = classify(page, product)
         except Exception as error:
             status, reason = "unknown", f"Fetch failed: {type(error).__name__}"
