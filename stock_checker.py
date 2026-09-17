@@ -130,6 +130,22 @@ def send_email(product: dict, reason: str, recipient: str, sender: str, password
         smtp.send_message(message)
 
 
+def send_check_warning(products: list[dict], recipient: str, sender: str, password: str) -> None:
+    message = EmailMessage()
+    message["From"] = sender
+    message["To"] = recipient
+    message["Subject"] = "Restock monitor: some stores cannot be checked"
+    lines = ["Three consecutive checks could not read these product pages:", ""]
+    for product in products:
+        lines.extend((f"{product['store']}: {product['url']}", ""))
+    lines.append("No stock conclusion was drawn for these stores. Their pages may block automated checks. Other stores continue to be checked.")
+    message.set_content("\n".join(lines))
+    with smtplib.SMTP("smtp.gmail.com", 587, timeout=20) as smtp:
+        smtp.starttls()
+        smtp.login(sender, password)
+        smtp.send_message(message)
+
+
 def main() -> int:
     try:
         products = json.loads(os.environ["TARGETS_JSON"])
@@ -145,6 +161,7 @@ def main() -> int:
         return 2
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     changed = False
+    newly_unreadable = []
     for product in products:
         key = product["key"]
         try:
@@ -152,16 +169,27 @@ def main() -> int:
             status, reason = classify(page, product)
         except Exception as error:
             status, reason = "unknown", f"Fetch failed: {type(error).__name__}"
-        previous = state.get(key, {}).get("status")
+        entry = state.get(key, {})
+        previous = entry.get("status")
         print(f"{now} {key}: {status} ({reason}); previous={previous or 'none'}")
         if status == "unknown":
+            if entry.get("health") != "unreadable":
+                entry["unknown_count"] = entry.get("unknown_count", 0) + 1
+                if entry["unknown_count"] >= 3:
+                    entry["health"] = "unreadable"
+                    newly_unreadable.append(product)
+                state[key] = entry
+                changed = True
             continue  # Preserve the last reliable observation.
         if status == "available" and previous != "available":
             send_email(product, reason, recipient, sender, password)
             print(f"Alert sent for {key}")
-        if previous != status:
+        if previous != status or entry.get("health") == "unreadable" or entry.get("unknown_count"):
             state[key] = {"status": status, "checked_at": now}
             changed = True
+    if newly_unreadable:
+        send_check_warning(newly_unreadable, recipient, sender, password)
+        print(f"Health warning sent for {len(newly_unreadable)} unreadable store(s)")
     if changed:
         STATE.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return 0
