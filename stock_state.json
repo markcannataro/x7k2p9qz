@@ -6,5 +6,11 @@
   "one": {
     "checked_at": "2026-09-17T03:05:59+00:00",
     "status": "unavailable"
+  },
+  "three": {
+    "unknown_count": 1
+  },
+  "two": {
+    "unknown_count": 1
   }
 }
