@@ -8,7 +8,7 @@ import os
 import re
 import smtplib
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from html.parser import HTMLParser
 from pathlib import Path
@@ -159,11 +159,19 @@ def main() -> int:
     if not all((recipient, sender, password)):
         print("Missing EMAIL_TO, SMTP_USER, or SMTP_PASS", file=sys.stderr)
         return 2
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    checked_at = datetime.now(timezone.utc)
+    now = checked_at.isoformat(timespec="seconds")
+
     changed = False
     newly_unreadable = []
     for product in products:
         key = product["key"]
+        entry = state.get(key, {})
+        retry_after = entry.get("retry_after")
+        if retry_after and datetime.fromisoformat(retry_after) > checked_at:
+            print(f"{now} {key}: paused after unreadable page; retry after {retry_after}")
+            continue
+
         try:
             page = fetch_rendered(product) if product.get("render_js") else fetch(product["url"])
             status, reason = classify(page, product)
@@ -173,6 +181,12 @@ def main() -> int:
         previous = entry.get("status")
         print(f"{now} {key}: {status} ({reason}); previous={previous or 'none'}")
         if status == "unknown":
+            if entry.get("health") == "unreadable":
+                entry["retry_after"] = (checked_at + timedelta(hours=1)).isoformat(timespec="seconds")
+                state[key] = entry
+                changed = True
+                continue
+
             if entry.get("health") != "unreadable":
                 entry["unknown_count"] = entry.get("unknown_count", 0) + 1
                 if entry["unknown_count"] >= 3:
