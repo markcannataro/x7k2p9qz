@@ -1,0 +1,49 @@
+name: Check availability
+
+on:
+  schedule:
+    - cron: "7,17,27,37,47,57 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: availability-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install headless browser
+        run: |
+          python -m pip install playwright
+          python -m playwright install --with-deps --only-shell chromium
+      - name: Check and email
+        env:
+          TARGETS_JSON: ${{ secrets.TARGETS_JSON }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+        run: python stock_checker.py
+      - name: Save last known statuses
+        run: |
+          if ! git diff --quiet -- stock_state.json; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add stock_state.json
+            git commit -m "Update availability state"
+            for attempt in 1 2 3; do
+              git pull --rebase && git push && exit 0
+              sleep 2
+            done
+            exit 1
+          fi
