@@ -30,6 +30,7 @@ jobs:
       - name: Check and email
         env:
           TARGETS_JSON: ${{ secrets.TARGETS_JSON }}
+          EXTRA_TARGETS_JSON: ${{ secrets.EXTRA_TARGETS_JSON }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
