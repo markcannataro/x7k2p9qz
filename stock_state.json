@@ -1,7 +1,8 @@
 {
   "five": {
     "checked_at": "2026-09-17T08:19:13+00:00",
-    "status": "unavailable"
+    "status": "unavailable",
+    "unknown_count": 1
   },
   "four": {
     "checked_at": "2026-09-17T03:05:59+00:00",
@@ -13,12 +14,12 @@
   },
   "three": {
     "health": "unreadable",
-    "retry_after": "2026-09-18T07:00:01+00:00",
+    "retry_after": "2026-09-18T12:03:59+00:00",
     "unknown_count": 3
   },
   "two": {
     "health": "unreadable",
-    "retry_after": "2026-09-18T07:00:01+00:00",
+    "retry_after": "2026-09-18T12:03:59+00:00",
     "unknown_count": 3
   }
 }
