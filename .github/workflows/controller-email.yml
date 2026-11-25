@@ -1,0 +1,110 @@
+name: Controller email alerts
+on:
+  schedule:
+    - cron: '3,8,13,18,23,28,33,38,43,48,53,58 * * * *'
+  workflow_dispatch:
+    inputs:
+      test_email:
+        description: Send a clearly labelled test email
+        type: boolean
+        default: false
+permissions:
+  contents: write
+concurrency:
+  group: controller-email-alerts
+  cancel-in-progress: false
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install browser
+        run: |
+          python -m pip install playwright==1.56.0
+          python -m playwright install --with-deps chromium
+      - name: Check listings and email
+        env:
+          CONTROLLER_TARGETS_JSON: ${{ secrets.CONTROLLER_TARGETS_JSON }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          TEST_EMAIL: ${{ inputs.test_email }}
+        run: |
+          python - <<'PY'
+          import json, os, smtplib, time
+          from pathlib import Path
+          from email.message import EmailMessage
+          from playwright.sync_api import sync_playwright
+          state_path = Path("controller_email_state.json")
+          state = json.loads(state_path.read_text()) if state_path.exists() else {}
+          targets = json.loads(os.environ["CONTROLLER_TARGETS_JSON"])
+          reader = '(() => {\n const visible=e=>!!e&&e.getClientRects().length>0&&getComputedStyle(e).visibility!==\'hidden\'&&!e.closest(\'[hidden],[aria-hidden="true"]\');\n const normalize=s=>String(s||\'\').replace(/[\\u2122\\u00ae]/g,\'\').normalize(\'NFKC\').replace(/\\s*[-\\u2013\\u2014]\\s*/g,\' - \').replace(/\\s+/g,\' \').trim().toLowerCase();\n const product=ControllerTargets.find(t=>new URL(t.url).pathname===location.pathname);\n const target=normalize(product?.title);\n function inspect(){\n  const heads=[...document.querySelectorAll(\'main h1\')].filter(visible);\n  if(!product||heads.length!==1||normalize(heads[0].innerText)!==target)return {status:\'unknown\',reason:\'Exact product title could not be verified\'};\n  // Observed primary purchase panel is the product heading\'s immediate parent.\n  const panel=heads[0].parentElement;\n  const buttons=[...panel.querySelectorAll(\'button\')].filter(visible);\n  const labels=buttons.map(b=>b.innerText.trim()).filter(Boolean).slice(0,12);\n  const quantityUnavailable=/the requested quantity is not available/i.test(panel.innerText);\n  if(quantityUnavailable)return {status:\'unavailable\',reason:\'The requested quantity is not available\',buttons:labels};\n  const sold=buttons.filter(b=>/^(sold out|out of stock|currently unavailable)$/i.test(b.innerText.trim()));\n  const buy=buttons.filter(b=>/^(add to cart|pre[ -]?(?:order(?: now)?|purchase))$/i.test(b.innerText.trim())&&!b.disabled&&b.getAttribute(\'aria-disabled\')!==\'true\');\n  if(sold.length===1&&buy.length===0)return {status:\'unavailable\',buttons:labels};\n  if(buy.length===1&&sold.length===0)return {status:\'available\',buttons:labels};\n  return {status:\'unknown\',reason:\'Stock button is loading, ambiguous, or unrecognized\',buttons:labels};\n }\n globalThis.NintendoReader={inspect};\n})();\n'
+          
+          def email(subject, body):
+              msg = EmailMessage()
+              msg["From"] = os.environ["SMTP_USER"]
+              msg["To"] = os.environ["EMAIL_TO"]
+              msg["Subject"] = subject
+              msg.set_content(body)
+              with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as smtp:
+                  smtp.starttls()
+                  smtp.login(os.environ["SMTP_USER"], os.environ["SMTP_PASS"])
+                  smtp.send_message(msg)
+          
+          if os.environ.get("TEST_EMAIL") == "true":
+              email("Controller alerts: email test", "The controller email sender is working. This is a test, not a stock alert. Both controller listings will be checked separately from your Chrome extension. GitHub schedules can be delayed.")
+              print("Test email accepted by Gmail")
+          
+          with sync_playwright() as p:
+              browser = p.chromium.launch(headless=True)
+              for i, product in enumerate(targets):
+                  key = str(i)
+                  entry = state.get(key, {})
+                  result = {"status": "unknown", "reason": "Page could not be read"}
+                  page = browser.new_page(locale="en-CA")
+                  try:
+                      page.goto(product["url"], wait_until="domcontentloaded", timeout=45000)
+                      page.evaluate("targets => { globalThis.ControllerTargets = targets; }", targets)
+                      page.evaluate(reader)
+                      for attempt in range(25):
+                          result = page.evaluate("NintendoReader.inspect()")
+                          if result["status"] != "unknown":
+                              break
+                          page.wait_for_timeout(1000)
+                  except Exception as error:
+                      result = {"status": "unknown", "reason": type(error).__name__}
+                  finally:
+                      page.close()
+                  status = result["status"]
+                  print(f"Listing {i + 1}: {status}")
+                  if status == "unknown":
+                      entry["failures"] = entry.get("failures", 0) + 1
+                      if entry["failures"] >= 3 and not entry.get("warned"):
+                          email("Controller alerts: unable to check " + product["label"], "Three checks could not read availability. This is NOT a stock alert. Your Chrome extension is independent. Check manually:\n" + product["url"])
+                          entry["warned"] = True
+                  else:
+                      if status == "available" and entry.get("status") != "available":
+                          email("Possible controller restock: " + product["label"], "An enabled purchase button was detected on Nintendo Canada. Stock may disappear before checkout; this does not reserve anything.\n\n" + product["url"] + "\n\nChecked at " + time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()))
+                      entry = {"status": status, "failures": 0, "warned": False}
+                  entry["checked_at"] = time.time()
+                  state[key] = entry
+                  state_path.write_text(json.dumps(state, indent=2) + "\n")
+              browser.close()
+          PY
+      - name: Save alert history
+        if: always()
+        run: |
+          if [ -f controller_email_state.json ]; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add controller_email_state.json
+            if ! git diff --cached --quiet; then
+              git commit -m 'Update controller alert history'
+              git pull --rebase
+              git push
+            fi
+          fi
